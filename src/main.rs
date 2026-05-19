@@ -13,7 +13,7 @@ use crate::bundle::ConfigBundle;
 use crate::config::OctConfig;
 use crate::paths::PathDiscovery;
 
-const DEFAULT_ENDPOINT: &str = "https://oct.your-worker.workers.dev";
+const DEFAULT_ENDPOINT: &str = "https://oct.sereniblue.com";
 
 #[derive(Parser)]
 #[command(name = "oct", about = "OpenCode configuration sync CLI")]
