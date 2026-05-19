@@ -167,9 +167,6 @@ fn scan_config_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     }
 
     let safe_extensions = ["json", "jsonc", "toml", "ts", "js", "yaml", "yml"];
-    let safe_dirs = [
-        "agents", "commands", "modes", "plugins", "skills", "tools", "themes",
-    ];
     let excluded_files = ["auth.json", "mcp-auth.json"];
     let excluded_patterns = ["opencode.db", "opencode-"];
 
@@ -206,14 +203,6 @@ fn scan_config_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
         }
 
         files.push(path.to_path_buf());
-    }
-
-    // Also scan safe subdirectories
-    for safe_dir in &safe_dirs {
-        let sub = dir.join(safe_dir);
-        if sub.exists() {
-            scan_config_dir(&sub, files)?;
-        }
     }
 
     Ok(())

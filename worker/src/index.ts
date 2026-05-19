@@ -37,6 +37,78 @@ interface ErrorResponse {
 }
 
 const TOKEN_REGEX = /^[A-Za-z0-9]{32,}$/;
+const WINDOWS_RESERVED = new Set([
+  "CON", "PRN", "AUX", "NUL",
+  "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+  "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+]);
+const MAX_SINGLE_FILE_SIZE = 1 * 1024 * 1024; // 1MB
+
+function extractFileName(filePath: string): string {
+  const parts = filePath.split("/");
+  const name = parts[parts.length - 1] ?? "";
+  return name.split(".")[0] ?? name;
+}
+
+async function validateFileEntry(
+  file: FileEntry,
+  requestId: string,
+  seenPaths: Set<string>
+): Promise<Response | null> {
+  if (!file.path || typeof file.path !== "string") {
+    return errorResponse("INVALID_ENTRY", "each file must have a path", 400, requestId);
+  }
+
+  // Path security
+  if (
+    file.path.startsWith("/") ||
+    file.path.includes("..") ||
+    file.path.includes("\\") ||
+    (file.path.includes(":") && file.path.length > 1)
+  ) {
+    return errorResponse("PATH_SECURITY", `unsafe path: ${file.path}`, 400, requestId);
+  }
+
+  // Duplicate path detection
+  if (seenPaths.has(file.path)) {
+    return errorResponse("DUPLICATE_PATH", `duplicate path: ${file.path}`, 400, requestId);
+  }
+  seenPaths.add(file.path);
+
+  if (!file.contentBase64 || typeof file.contentBase64 !== "string") {
+    return errorResponse("INVALID_ENTRY", "each file must have contentBase64", 400, requestId);
+  }
+
+  // Base64 validation
+  try {
+    const decoded = Uint8Array.from(atob(file.contentBase64), (c) => c.charCodeAt(0));
+    if (decoded.length > MAX_SINGLE_FILE_SIZE) {
+      return errorResponse("FILE_TOO_LARGE", `file ${file.path} exceeds 1MB limit`, 400, requestId);
+    }
+
+    // SHA256 verification
+    const hashBuffer = await crypto.subtle.digest("SHA-256", decoded);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const actualSha256 = hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+    if (actualSha256 !== file.sha256) {
+      return errorResponse("SHA256_MISMATCH", `sha256 mismatch for file: ${file.path}`, 400, requestId);
+    }
+  } catch {
+    return errorResponse("INVALID_BASE64", `invalid base64 for file: ${file.path}`, 400, requestId);
+  }
+
+  if (!file.sha256 || typeof file.sha256 !== "string") {
+    return errorResponse("INVALID_ENTRY", "each file must have sha256", 400, requestId);
+  }
+
+  // Windows reserved names check
+  const fileName = extractFileName(file.path);
+  if (WINDOWS_RESERVED.has(fileName.toUpperCase())) {
+    return errorResponse("RESERVED_NAME", `Windows reserved name: ${file.path}`, 400, requestId);
+  }
+
+  return null;
+}
 
 function errorResponse(
   code: string,
@@ -272,17 +344,10 @@ export default {
           }
 
           // Validate each file entry
+          const seenPaths = new Set<string>();
           for (const file of bundle.files) {
-            if (!file.path || typeof file.path !== "string") {
-              return errorResponse("INVALID_ENTRY", "each file must have a path", 400, requestId);
-            }
-            // Path security
-            if (file.path.startsWith("/") || file.path.includes("..") || file.path.includes("\\") || (file.path.includes(":") && file.path.length > 1)) {
-              return errorResponse("PATH_SECURITY", `unsafe path: ${file.path}`, 400, requestId);
-            }
-            if (!file.contentBase64 || !file.sha256) {
-              return errorResponse("INVALID_ENTRY", "each file must have contentBase64 and sha256", 400, requestId);
-            }
+            const err = await validateFileEntry(file, requestId, seenPaths);
+            if (err) return err;
           }
 
           const configKey = `config:v1:${tokenHash}`;

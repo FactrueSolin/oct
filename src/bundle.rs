@@ -13,6 +13,7 @@ const MAX_FILE_SIZE: usize = 1 * 1024 * 1024; // 1MB
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct FileEntry {
     pub path: String,
+    #[serde(rename = "contentBase64")]
     pub content_base64: String,
     pub sha256: String,
     pub size: usize,
