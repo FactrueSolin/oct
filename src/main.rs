@@ -183,27 +183,19 @@ fn cmd_pull() -> Result<()> {
         &bundle.bundle_hash[..16]
     );
 
-    // Determine target directories
+    // MVP: only sync to active_config dir to avoid writing same bundle to both roots
     let discovery = PathDiscovery::run()?;
-    let target_dirs: Vec<std::path::PathBuf> = discovery
-        .active_config
-        .iter()
-        .chain(discovery.active_data.iter())
-        .cloned()
-        .collect();
-
-    if target_dirs.is_empty() {
-        return Err(error::OctError::NoConfigFound);
-    }
+    let target_dir = match &discovery.active_config {
+        Some(d) => d,
+        None => return Err(error::OctError::NoConfigFound),
+    };
 
     // Create backup before overwriting
     let mut files_to_backup = Vec::new();
     for entry in &bundle.files {
-        for base in &target_dirs {
-            let full = base.join(&entry.path);
-            if full.exists() {
-                files_to_backup.push((full, base.clone()));
-            }
+        let full = target_dir.join(&entry.path);
+        if full.exists() {
+            files_to_backup.push((full, target_dir.clone()));
         }
     }
 
@@ -213,12 +205,10 @@ fn cmd_pull() -> Result<()> {
         println!("backup created: {}", manifest.id);
     }
 
-    // Apply bundle to each target directory
-    for base in &target_dirs {
-        if base.exists() {
-            println!("applying to {}...", base.display());
-            bundle::apply_bundle(&bundle, base)?;
-        }
+    // Apply bundle to config directory only
+    if target_dir.exists() {
+        println!("applying to {}...", target_dir.display());
+        bundle::apply_bundle(&bundle, target_dir)?;
     }
 
     println!("pull successful");

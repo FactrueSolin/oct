@@ -343,25 +343,51 @@ export default {
             return errorResponse("BUNDLE_TOO_LARGE", "bundle exceeds 10MB limit", 400, requestId);
           }
 
-          // Validate each file entry
+          // Validate each file entry and collect decoded sizes for server-side meta
           const seenPaths = new Set<string>();
+          let serverTotalBytes = 0;
           for (const file of bundle.files) {
             const err = await validateFileEntry(file, requestId, seenPaths);
             if (err) return err;
+            // Decode to get actual size for totalBytes calculation
+            const decoded = Uint8Array.from(atob(file.contentBase64), (c) => c.charCodeAt(0));
+            serverTotalBytes += decoded.length;
           }
+
+          // Server-side bundle hash: hash of all file paths + sha256 in order
+          const hashParts: string[] = [];
+          for (const file of bundle.files) {
+            hashParts.push(file.path);
+            hashParts.push(file.sha256);
+          }
+          const hashEncoder = new TextEncoder();
+          const hashInput = hashParts.join("");
+          const hashBuffer = await crypto.subtle.digest("SHA-256", hashEncoder.encode(hashInput));
+          const serverBundleHash = Array.from(new Uint8Array(hashBuffer))
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
 
           const configKey = `config:v1:${tokenHash}`;
           const metaKey = `meta:v1:${tokenHash}`;
 
-          await env.OCT_KV.put(configKey, JSON.stringify(bundle));
+          // Store bundle with server-computed metadata
+          const serverBundle = {
+            schemaVersion: bundle.schemaVersion ?? 1,
+            createdAt: new Date().toISOString(),
+            platform: bundle.platform ?? "unknown",
+            files: bundle.files,
+            totalBytes: serverTotalBytes,
+            bundleHash: serverBundleHash,
+          };
+          await env.OCT_KV.put(configKey, JSON.stringify(serverBundle));
 
           const meta: MetaInfo = {
-            schemaVersion: bundle.schemaVersion,
-            updatedAt: bundle.createdAt,
-            fileCount: bundle.files.length,
-            totalBytes: bundle.totalBytes,
-            bundleHash: bundle.bundleHash,
-            platform: bundle.platform,
+            schemaVersion: serverBundle.schemaVersion,
+            updatedAt: serverBundle.createdAt,
+            fileCount: serverBundle.files.length,
+            totalBytes: serverBundle.totalBytes,
+            bundleHash: serverBundle.bundleHash,
+            platform: serverBundle.platform,
           };
           await env.OCT_KV.put(metaKey, JSON.stringify(meta));
 
