@@ -1,1 +1,8 @@
 /target
+
+# Node / Worker dependencies and local build artifacts
+node_modules/
+worker/node_modules/
+worker/.wrangler/
+worker/dist/
+worker/.dev.vars
