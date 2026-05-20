@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:bundle-limit": "node scripts/verify-bundle-limit.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240117.0",

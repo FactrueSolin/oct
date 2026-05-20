@@ -43,6 +43,7 @@ const WINDOWS_RESERVED = new Set([
   "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ]);
 const MAX_SINGLE_FILE_SIZE = 1 * 1024 * 1024; // 1MB
+const MAX_BUNDLE_SIZE = 10 * 1024 * 1024; // 10MB
 
 function extractFileName(filePath: string): string {
   const parts = filePath.split("/");
@@ -339,10 +340,6 @@ export default {
           if (!bundle.files || !Array.isArray(bundle.files)) {
             return errorResponse("INVALID_BUNDLE", "files array is required", 400, requestId);
           }
-          if (bundle.totalBytes > 10 * 1024 * 1024) {
-            return errorResponse("BUNDLE_TOO_LARGE", "bundle exceeds 10MB limit", 400, requestId);
-          }
-
           // Validate each file entry and collect decoded sizes for server-side meta
           const seenPaths = new Set<string>();
           let serverTotalBytes = 0;
@@ -352,6 +349,9 @@ export default {
             // Decode to get actual size for totalBytes calculation
             const decoded = Uint8Array.from(atob(file.contentBase64), (c) => c.charCodeAt(0));
             serverTotalBytes += decoded.length;
+          }
+          if (serverTotalBytes > MAX_BUNDLE_SIZE) {
+            return errorResponse("BUNDLE_TOO_LARGE", "bundle exceeds 10MB limit", 400, requestId);
           }
 
           // Server-side bundle hash: hash of all file paths + sha256 in order
