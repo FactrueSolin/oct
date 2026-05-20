@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::error::{OctError, Result};
@@ -91,19 +92,21 @@ impl PathDiscovery {
             });
         }
 
-        // Legacy ~/.opencode
+        // Legacy home-relative locations must use PathBuf::join; string concatenation
+        // produces broken Windows paths such as C:\Users\Daifukuopencode.
         if let Some(home) = dirs::home_dir() {
-            let p = home.join(".opencode");
-            let exists = p.exists();
-            if exists && active_config.is_none() {
-                active_config = Some(p.clone());
+            for (label, p) in legacy_home_dirs(&home) {
+                let exists = p.exists();
+                if exists && active_config.is_none() {
+                    active_config = Some(p.clone());
+                }
+                paths.push(DiscoveredPath {
+                    label: label.into(),
+                    path: p,
+                    exists,
+                    kind: PathKind::LegacyHome,
+                });
             }
-            paths.push(DiscoveredPath {
-                label: "Legacy ~/.opencode".into(),
-                path: p,
-                exists,
-                kind: PathKind::LegacyHome,
-            });
         }
 
         // Managed config (system-wide)
@@ -127,6 +130,7 @@ impl PathDiscovery {
 
     pub fn config_files(&self) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
+        let mut seen = HashSet::new();
         let dirs_to_scan = self
             .active_config
             .iter()
@@ -140,6 +144,9 @@ impl PathDiscovery {
             }
             scan_config_dir(dir, &mut files)?;
         }
+
+        files.retain(|file| seen.insert(file.clone()));
+        files.sort();
 
         if files.is_empty() {
             return Err(OctError::NoConfigFound);
@@ -161,18 +168,86 @@ fn managed_config_dir() -> Option<PathBuf> {
     }
 }
 
+fn legacy_home_dirs(home: &Path) -> [(&'static str, PathBuf); 2] {
+    [
+        ("Legacy ~/.opencode", home.join(".opencode")),
+        ("Legacy ~/opencode", home.join("opencode")),
+    ]
+}
+
 fn scan_config_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     if !dir.exists() {
         return Ok(());
     }
 
-    let safe_extensions = ["json", "jsonc", "toml", "ts", "js", "yaml", "yml"];
-    let excluded_files = ["auth.json", "mcp-auth.json"];
-    let excluded_patterns = ["opencode.db", "opencode-"];
+    for file_name in ROOT_CONFIG_FILES {
+        push_if_file(dir.join(file_name), files);
+    }
+
+    for subdir in WHITELISTED_CONFIG_DIRS {
+        scan_whitelisted_subdir(&dir.join(subdir), files)?;
+    }
+
+    Ok(())
+}
+
+const ROOT_CONFIG_FILES: &[&str] = &[
+    "opencode.json",
+    "opencode.jsonc",
+    "package.json",
+    "package-lock.json",
+];
+
+const WHITELISTED_CONFIG_DIRS: &[&str] = &["agents", "commands", "plugins", "plugin"];
+
+const SAFE_CONFIG_EXTENSIONS: &[&str] = &["json", "jsonc", "toml", "ts", "js", "yaml", "yml", "md"];
+
+const EXCLUDED_DIRS: &[&str] = &[
+    ".cache",
+    ".git",
+    ".hg",
+    ".next",
+    ".svn",
+    ".wrangler",
+    "build",
+    "cache",
+    "coverage",
+    "dist",
+    "lib",
+    "node_modules",
+    "out",
+    "target",
+    "tmp",
+    "vendor",
+];
+
+const EXCLUDED_FILES: &[&str] = &[
+    "auth.json",
+    "bun.lockb",
+    "mcp-auth.json",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+];
+
+const EXCLUDED_PREFIXES: &[&str] = &["opencode.db", "opencode-"];
+
+fn push_if_file(path: PathBuf, files: &mut Vec<PathBuf>) {
+    if path.is_file() {
+        files.push(path);
+    }
+}
+
+fn scan_whitelisted_subdir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
 
     for entry in walkdir::WalkDir::new(dir)
         .max_depth(3)
         .into_iter()
+        .filter_entry(|e| !is_excluded_dir(e.path()))
         .filter_map(|e| e.ok())
     {
         let path = entry.path();
@@ -180,25 +255,21 @@ fn scan_config_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
             continue;
         }
 
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-        // Exclude sensitive files
-        if excluded_files.contains(&file_name) {
+        let lower_file_name = file_name.to_ascii_lowercase();
+        if EXCLUDED_FILES.contains(&lower_file_name.as_str()) {
             continue;
         }
-        if excluded_patterns.iter().any(|p| file_name.starts_with(p)) {
+        if EXCLUDED_PREFIXES
+            .iter()
+            .any(|p| lower_file_name.starts_with(p))
+        {
             continue;
         }
 
-        // Check extension
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("");
-        if !safe_extensions.contains(&ext) {
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if !SAFE_CONFIG_EXTENSIONS.contains(&ext) {
             continue;
         }
 
@@ -206,4 +277,109 @@ fn scan_config_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn is_excluded_dir(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| EXCLUDED_DIRS.contains(&name.to_ascii_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn scan_uses_whitelist_and_skips_dependencies() {
+        let root = temp_dir("whitelist");
+        std::fs::create_dir_all(root.join("plugins").join("node_modules").join("dep")).unwrap();
+        std::fs::create_dir_all(root.join("plugins").join("dist")).unwrap();
+        std::fs::create_dir_all(root.join("plugins").join("nested-plugin")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules").join("top_dep")).unwrap();
+        std::fs::create_dir_all(root.join("unknown")).unwrap();
+
+        std::fs::write(root.join("opencode.json"), "{}").unwrap();
+        std::fs::write(root.join("package.json"), "{}").unwrap();
+        std::fs::write(root.join("package-lock.json"), "{}").unwrap();
+        std::fs::write(
+            root.join("plugins").join("graphify.js"),
+            "export default {}",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("agents")).unwrap();
+        std::fs::write(root.join("agents").join("coder.md"), "agent").unwrap();
+        std::fs::write(
+            root.join("plugins")
+                .join("nested-plugin")
+                .join("package-lock.json"),
+            "{}",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("plugins")
+                .join("node_modules")
+                .join("dep")
+                .join("index.js"),
+            "dependency",
+        )
+        .unwrap();
+        std::fs::write(root.join("plugins").join("dist").join("bundle.js"), "built").unwrap();
+        std::fs::write(
+            root.join("node_modules").join("top_dep").join("index.js"),
+            "dependency",
+        )
+        .unwrap();
+        std::fs::write(root.join("unknown").join("extra.js"), "unknown").unwrap();
+
+        let mut files = Vec::new();
+        scan_config_dir(&root, &mut files).unwrap();
+        let mut rel_files = files
+            .iter()
+            .map(|p| {
+                p.strip_prefix(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect::<Vec<_>>();
+        rel_files.sort();
+
+        assert_eq!(
+            rel_files,
+            vec![
+                "agents/coder.md",
+                "opencode.json",
+                "package-lock.json",
+                "package.json",
+                "plugins/graphify.js"
+            ]
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_home_path_uses_path_join() {
+        let dirs = legacy_home_dirs(Path::new("/home/factrue"));
+        assert_eq!(dirs[0].1, PathBuf::from("/home/factrue").join(".opencode"));
+        assert_eq!(dirs[1].1, PathBuf::from("/home/factrue").join("opencode"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn legacy_home_path_keeps_windows_separator() {
+        let dirs = legacy_home_dirs(Path::new(r"C:\Users\Daifuku"));
+        assert_eq!(dirs[0].1, PathBuf::from(r"C:\Users\Daifuku\.opencode"));
+        assert_eq!(dirs[1].1, PathBuf::from(r"C:\Users\Daifuku\opencode"));
+    }
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("oct-{}-{}", prefix, unique))
+    }
 }
